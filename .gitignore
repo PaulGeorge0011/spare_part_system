@@ -1,0 +1,84 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+backend/venv_backend/
+backend/api/wheelhouse/
+
+# ========================
+# Node.js / Frontend
+# ========================
+frontend/node_modules/
+frontend/dist/
+frontend/dist_bk/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+frontend/__screenshots__/
+*.tsbuildinfo
+.eslintcache
+
+# ========================
+# Environment & Secrets
+# ========================
+.env
+ssl/
+
+# ========================
+# Large / Binary files
+# ========================
+*.tar
+*.tar.gz
+*.zip
+*.docx
+*.xlsx
+*.log
+
+# ========================
+# Uploads & Data
+# ========================
+uploads/
+backend/api/uploads/
+backend/api/spare-parts/
+
+# ========================
+# IDE & Editor
+# ========================
+.claude/
+.cursor/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ========================
+# OS
+# ========================
+.DS_Store
+Thumbs.db
+*.local
+
+# ========================
+# Backups & Temp
+# ========================
+frontend_bk/
+spare_part_phase1_offline/
+spare_part_update_offline/
+claude-skills-pack-*/
+tree.txt
+build.log
+
+# ========================
+# Cypress / Playwright
+# ========================
+/cypress/videos/
+/cypress/screenshots/

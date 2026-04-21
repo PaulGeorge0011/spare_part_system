@@ -1,0 +1,73 @@
+@import './base.css';
+
+/* -- App Shell -- */
+#app {
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  font-family: var(--sp-font-family);
+}
+
+a {
+  text-decoration: none;
+  color: var(--sp-primary);
+  transition: color var(--sp-transition-fast);
+}
+
+@media (hover: hover) {
+  a:hover {
+    color: var(--sp-primary-dark);
+  }
+}
+
+/* -- Focus ring for accessibility -- */
+:focus-visible {
+  outline: 2px solid var(--sp-primary);
+  outline-offset: 2px;
+}
+
+/* -- Naive UI Global Refinements -- */
+.n-card {
+  border-radius: var(--sp-radius-lg) !important;
+}
+
+.n-button {
+  border-radius: var(--sp-radius-sm) !important;
+  font-weight: 500;
+}
+
+.n-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.n-data-table .n-data-table-th {
+  font-weight: 600;
+  font-size: var(--sp-text-sm);
+  letter-spacing: 0.02em;
+}
+
+.n-dialog {
+  border-radius: var(--sp-radius-xl) !important;
+}
+
+.n-input {
+  border-radius: var(--sp-radius-sm) !important;
+}
+
+.n-tag {
+  border-radius: var(--sp-radius-xs) !important;
+  font-weight: 500;
+}
+
+/* -- Mobile Overrides -- */
+@media (max-width: 767px) {
+  .n-button:not(.n-button--small) {
+    min-height: var(--touch-target-min);
+  }
+
+  .n-input .n-input__input-el {
+    min-height: var(--touch-target-min);
+  }
+}

@@ -1,0 +1,1204 @@
+<template>
+  <n-modal
+    v-model:show="dialogVisible"
+    preset="card"
+    title="批量新增机械修复件"
+    :style="isMobile ? 'width: 95%;' : 'width: 90%;'"
+    :mask-closable="false"
+    :on-after-leave="handleClose"
+    class="batch-import-dialog"
+  >
+    <n-steps :current="currentStep + 1" status="process" style="margin-bottom: 20px">
+      <n-step title="上传Excel" />
+      <n-step title="字段映射" />
+      <n-step title="数据预览" />
+      <n-step title="导入结果" />
+    </n-steps>
+
+    <!-- 步骤1: 上传Excel -->
+    <div v-if="currentStep === 0" class="step-content">
+      <div class="batch-mode-row">
+        <span class="mode-label">批量上传模式：</span>
+        <n-radio-group v-model:value="batchMode" class="batch-mode-group">
+          <n-radio-button value="full">
+            <span class="mode-title">模式一：全部读取</span>
+            <span class="mode-desc">不做数据验证，按行读取文件中全部数据并导入</span>
+          </n-radio-button>
+          <n-radio-button value="validate">
+            <span class="mode-title">模式二：数据验证</span>
+            <span class="mode-desc">仅导入必填字段完整的行，其余行不参与导入</span>
+          </n-radio-button>
+        </n-radio-group>
+      </div>
+      <n-upload
+        ref="uploadRef"
+        :default-upload="false"
+        :max="1"
+        accept=".xlsx,.xls"
+        :disabled="isParsing"
+        @change="handleFileChange"
+      >
+        <n-upload-dragger>
+          <div style="margin-bottom: 12px">
+            <n-icon :size="48" :depth="3"><CloudUploadOutline /></n-icon>
+          </div>
+          <n-text style="font-size: 14px">
+            将Excel文件拖到此处，或<n-text tag="span" type="primary">点击上传</n-text>
+          </n-text>
+          <n-p depth="3" style="margin: 8px 0 0 0; font-size: 12px">仅支持 .xlsx 或 .xls。.xlsx 表内嵌入图片会自动提取（含 Excel 浮动图片与 WPS 嵌入单元格图片 =DISPIMG("ID_xxx",1)），可映射为「本行嵌入图片1」「本行嵌入图片2」。</n-p>
+        </n-upload-dragger>
+      </n-upload>
+
+      <!-- 解析进度 -->
+      <div v-if="isParsing" class="parsing-progress">
+        <div class="progress-header">
+          <n-spin :size="18" />
+          <span class="progress-text">{{ parsingStatus }}</span>
+        </div>
+        <n-progress
+          type="line"
+          :percentage="parsingProgress"
+          :status="parsingProgress === 100 ? 'success' : 'default'"
+          :height="8"
+          :show-indicator="true"
+        />
+        <div v-if="parsingDetail" class="progress-detail">{{ parsingDetail }}</div>
+      </div>
+
+      <div v-if="excelColumns.length > 0 && !isParsing" class="columns-preview">
+        <h4>检测到的列：</h4>
+        <n-space>
+          <n-tag v-for="col in excelColumns" :key="col">{{ col }}</n-tag>
+        </n-space>
+      </div>
+    </div>
+
+    <!-- 步骤2: 字段映射 -->
+    <div v-if="currentStep === 1" class="step-content">
+      <n-alert
+        type="info"
+        :closable="false"
+        style="margin-bottom: 20px"
+      >
+        请为每个必填字段选择对应的Excel列（带<span style="color: red">*</span>的为必填）
+      </n-alert>
+      <div class="table-scroll-wrap">
+        <n-data-table :columns="mappingColumns" :data="fieldMapping" :bordered="true" />
+      </div>
+    </div>
+
+    <!-- 步骤3: 数据预览 -->
+    <div v-if="currentStep === 2" class="step-content step-preview-wrap">
+      <div v-if="isImporting" class="import-overlay">
+        <div class="import-progress-box">
+          <n-spin :size="32" />
+          <div class="import-status">{{ importStatus }}</div>
+          <n-progress
+            type="line"
+            :percentage="importProgress"
+            :height="8"
+            style="max-width: 360px; margin: 16px auto 0;"
+          />
+        </div>
+      </div>
+      <n-alert
+        type="warning"
+        :closable="false"
+        style="margin-bottom: 12px"
+      >
+        共 {{ totalPreviewRows }} 条数据，请检查预览数据是否正确
+        <span class="mode-hint">（{{ batchMode === 'full' ? '模式一：全部读取，未做行级验证' : '模式二：数据验证，仅含必填完整的行' }}）</span>
+      </n-alert>
+      <div v-if="totalPreviewRows > 0" class="range-row">
+        <span class="range-label">本次导入行范围：</span>
+        <n-input-number
+          v-model:value="importRangeStart"
+          :min="1"
+          :max="totalPreviewRows"
+          :step="1"
+          size="small"
+        />
+        <span class="range-separator">至</span>
+        <n-input-number
+          v-model:value="importRangeEnd"
+          :min="1"
+          :max="totalPreviewRows"
+          :step="1"
+          size="small"
+        />
+        <span class="range-hint">（共 {{ totalPreviewRows }} 行，实际将导入 {{ effectivePreviewData.length }} 行）</span>
+      </div>
+      <div class="table-scroll-wrap">
+        <n-data-table :columns="previewColumns" :data="effectivePreviewData" :bordered="true" :max-height="400" />
+      </div>
+    </div>
+
+    <!-- 步骤4: 导入结果 -->
+    <div v-if="currentStep === 3" class="step-content">
+      <n-result
+        :status="importResult.success ? 'success' : 'error'"
+        :title="importResult.title"
+        :description="importResult.subTitle"
+      >
+        <template #footer>
+          <div v-if="importResult.details" class="import-details">
+            <n-descriptions :column="2" bordered>
+              <n-descriptions-item label="成功">{{ importResult.details.success || 0 }} 条</n-descriptions-item>
+              <n-descriptions-item label="失败">{{ importResult.details.failed || 0 }} 条</n-descriptions-item>
+              <n-descriptions-item label="跳过">{{ importResult.details.skipped || 0 }} 条</n-descriptions-item>
+              <n-descriptions-item label="总计">{{ importResult.details.total || 0 }} 条</n-descriptions-item>
+            </n-descriptions>
+            <div v-if="importResult.details.errors && importResult.details.errors.length > 0" style="margin-top: 20px">
+              <h4>错误详情：</h4>
+              <n-data-table :columns="errorColumns" :data="importResult.details.errors" :bordered="true" :max-height="200" />
+            </div>
+          </div>
+        </template>
+      </n-result>
+    </div>
+
+    <template #footer>
+      <div class="dialog-footer">
+        <n-button :disabled="isImporting" @click="handleClose">取消</n-button>
+        <n-button v-if="currentStep > 0 && !isImporting" @click="handlePrev">上一步</n-button>
+        <n-button
+          v-if="currentStep < 3"
+          type="primary"
+          :disabled="!canNext || isImporting"
+          :loading="isImporting && currentStep === 2"
+          @click="handleNext"
+        >
+          {{ currentStep === 2 ? '开始导入' : '下一步' }}
+        </n-button>
+        <n-button
+          v-if="currentStep === 3"
+          type="primary"
+          @click="handleClose"
+        >
+          完成
+        </n-button>
+      </div>
+    </template>
+  </n-modal>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, watch, h } from 'vue'
+import { useIsMobile } from '@/composables/useIsMobile'
+import {
+  NModal, NSteps, NStep, NUpload, NUploadDragger,
+  NIcon, NText, NP, NAlert, NButton, NTag, NSpace,
+  NDataTable, NSelect, NInputNumber, NProgress, NSpin,
+  NResult, NDescriptions, NDescriptionsItem,
+  NRadioGroup, NRadioButton, NImage,
+  type DataTableColumns, type UploadFileInfo,
+} from 'naive-ui'
+import { CloudUploadOutline } from '@vicons/ionicons5'
+
+const { isMobile } = useIsMobile()
+import * as XLSX from 'xlsx'
+import { createMechanicalSparePartWithImages } from '@/api/mechanicalSparePart'
+import type { MechanicalSparePartCreate } from '@/types/mechanicalSparePart'
+import { downloadAndUploadImageFromUrl, uploadTempImageFromBlob } from '@/utils/imageUpload'
+import { extractEmbeddedImagesFromXlsx, getOrderedAnchorsWithBlobs, pickTwoDistinctBlobsPerRow } from '@/utils/excelEmbeddedImages'
+
+const props = defineProps<{
+  modelValue: boolean
+}>()
+
+const emit = defineEmits<{
+  'update:modelValue': [value: boolean]
+  'success': []
+}>()
+
+const dialogVisible = computed({
+  get: () => props.modelValue,
+  set: (val) => emit('update:modelValue', val)
+})
+
+const currentStep = ref(0)
+const batchMode = ref<'full' | 'validate'>('validate')
+const uploadRef = ref()
+const excelFile = ref<File | null>(null)
+const excelColumns = ref<string[]>([])
+const excelData = ref<any[]>([])
+const fieldMapping = ref<FieldMappingItem[]>([])
+const previewAllRows = ref<any[]>([])
+const importRangeStart = ref(1)
+const importRangeEnd = ref(0)
+const importResult = ref<ImportResult>({
+  success: false,
+  title: '',
+  subTitle: '',
+  details: null
+})
+
+const isParsing = ref(false)
+const parsingProgress = ref(0)
+const parsingStatus = ref('准备解析...')
+const parsingDetail = ref('')
+
+const isImporting = ref(false)
+const importProgress = ref(0)
+const importStatus = ref('')
+
+const fieldDefinitions: FieldDefinition[] = [
+  { fieldName: 'location_code', fieldLabel: '货位号', required: true, minWidth: 100 },
+  { fieldName: 'mes_material_code', fieldLabel: 'MES物料编码', required: false, minWidth: 150 },
+  { fieldName: 'specification_model', fieldLabel: '规格型号', required: false, minWidth: 150 },
+  { fieldName: 'drawing_no', fieldLabel: '图号', required: false, minWidth: 100 },
+  { fieldName: 'mes_material_desc', fieldLabel: 'MES物料描述', required: false, minWidth: 200 },
+  { fieldName: 'physical_material_desc', fieldLabel: '实物物料描述', required: false, minWidth: 200 },
+  { fieldName: 'applicable_model', fieldLabel: '适用机型', required: false, minWidth: 150 },
+  { fieldName: 'brand', fieldLabel: '品牌', required: false, minWidth: 100 },
+  { fieldName: 'mes_stock', fieldLabel: 'MES库存', required: false, minWidth: 100, type: 'number' },
+  { fieldName: 'physical_stock', fieldLabel: '修附件库存', required: false, minWidth: 100, type: 'number' },
+  { fieldName: 'unit', fieldLabel: '单位', required: false, minWidth: 80, defaultValue: '个' },
+  { fieldName: 'storage_location', fieldLabel: '存放地', required: false, minWidth: 150 },
+  { fieldName: 'custodian', fieldLabel: '保管人', required: false, minWidth: 100 },
+  { fieldName: 'source_description', fieldLabel: '来源说明', required: false, minWidth: 150 },
+  { fieldName: 'technical_appraisal', fieldLabel: '技术鉴定', required: false, minWidth: 150 },
+  { fieldName: 'disposal_method', fieldLabel: '处置方式', required: false, minWidth: 120 },
+  { fieldName: 'remarks', fieldLabel: '备注', required: false, minWidth: 200 },
+  { fieldName: 'image_url_1', fieldLabel: '实物图片1 (URL)', required: false, minWidth: 200, type: 'image' },
+  { fieldName: 'image_url_2', fieldLabel: '实物图片2 (URL)', required: false, minWidth: 200, type: 'image' },
+]
+
+interface FieldDefinition {
+  fieldName: string
+  fieldLabel: string
+  required: boolean
+  minWidth?: number
+  type?: 'string' | 'number' | 'image'
+  defaultValue?: string
+}
+
+interface FieldMappingItem {
+  fieldName: string
+  fieldLabel: string
+  required: boolean
+  excelColumn: string | null
+  defaultValue: string
+  defaultValuePlaceholder?: string
+  type?: 'string' | 'number' | 'image'
+}
+
+interface ImportResult {
+  success: boolean
+  title: string
+  subTitle: string
+  details: {
+    success: number
+    failed: number
+    skipped: number
+    total: number
+    errors?: Array<{ row: number; message: string }>
+  } | null
+}
+
+const visibleFields = computed(() => {
+  return fieldMapping.value.filter(f => f.excelColumn || f.defaultValue)
+})
+
+const totalPreviewRows = computed(() => previewAllRows.value.length)
+
+const effectivePreviewData = computed(() => {
+  const all = previewAllRows.value
+  if (!all.length) return []
+  const total = all.length
+  const start = Math.min(Math.max(1, Number(importRangeStart.value || 1)), total)
+  const end = Math.min(
+    total,
+    Math.max(start, Number(importRangeEnd.value || total)),
+  )
+  return all.slice(start - 1, end)
+})
+
+const canNext = computed(() => {
+  if (currentStep.value === 0) {
+    return excelColumns.value.length > 0
+  }
+  if (currentStep.value === 1) {
+    return fieldMapping.value
+      .filter(f => f.required)
+      .every(f => f.excelColumn)
+  }
+  if (currentStep.value === 2) {
+    return effectivePreviewData.value.length > 0
+  }
+  return true
+})
+
+const embedPreviewUrls = new Set<string>()
+function previewImageSrc(val: any): string {
+  if (val instanceof Blob) {
+    const u = URL.createObjectURL(val)
+    embedPreviewUrls.add(u)
+    return u
+  }
+  return String(val || '')
+}
+
+function revokeEmbedPreviewUrls() {
+  embedPreviewUrls.forEach(u => URL.revokeObjectURL(u))
+  embedPreviewUrls.clear()
+}
+
+const selectOptions = computed(() =>
+  excelColumns.value.map(c => ({ label: c, value: c }))
+)
+
+const mappingColumns = computed<DataTableColumns>(() => [
+  {
+    title: '修复件字段',
+    key: 'fieldLabel',
+    width: 200,
+    sorter: 'default',
+    render(row: any) {
+      return h('span', {}, [
+        row.required ? h('span', { style: 'color: red' }, '*') : null,
+        ` ${row.fieldLabel}`,
+      ])
+    },
+  },
+  {
+    title: '字段名',
+    key: 'fieldName',
+    width: 150,
+    sorter: 'default',
+  },
+  {
+    title: '对应Excel列',
+    key: 'excelColumn',
+    minWidth: 300,
+    render(row: any, rowIndex: number) {
+      return h(NSelect, {
+        value: fieldMapping.value[rowIndex].excelColumn,
+        options: selectOptions.value,
+        placeholder: '请选择Excel列',
+        clearable: true,
+        style: 'width: 100%',
+        onUpdateValue: (v: string | null) => {
+          fieldMapping.value[rowIndex].excelColumn = v
+        },
+      })
+    },
+  },
+  {
+    title: '默认值',
+    key: 'defaultValue',
+    width: 200,
+    render(row: any, rowIndex: number) {
+      if (row.required) {
+        return h('span', { style: 'color: #909399' }, '-')
+      }
+      return h('input', {
+        class: 'n-input__input-el',
+        style: 'width: 100%; padding: 4px 8px; border: 1px solid var(--n-border-color, #e0e0e6); border-radius: 3px; font-size: 14px; outline: none;',
+        value: fieldMapping.value[rowIndex].defaultValue,
+        placeholder: row.defaultValuePlaceholder || '',
+        onInput: (e: Event) => {
+          fieldMapping.value[rowIndex].defaultValue = (e.target as HTMLInputElement).value
+        },
+      })
+    },
+  },
+])
+
+const previewColumns = computed<DataTableColumns>(() => {
+  return visibleFields.value.map((field) => {
+    if (field.type === 'image') {
+      return {
+        title: field.fieldLabel,
+        key: field.fieldName,
+        minWidth: field.minWidth || 120,
+        align: 'center' as const,
+        sorter: 'default' as const,
+        render(row: any) {
+          const val = row[field.fieldName]
+          if (val) {
+            return h('div', { class: 'image-preview-cell' }, [
+              h(NImage, {
+                src: previewImageSrc(val),
+                style: 'width: 60px; height: 60px; border-radius: 4px;',
+                objectFit: 'cover',
+              }),
+            ])
+          }
+          return h('span', { class: 'empty-text' }, '-')
+        },
+      }
+    }
+    return {
+      title: field.fieldLabel,
+      key: field.fieldName,
+      minWidth: field.minWidth || 120,
+      ellipsis: { tooltip: true },
+      sorter: 'default' as const,
+    }
+  })
+})
+
+const errorColumns: DataTableColumns = [
+  { title: '行号', key: 'row', width: 80, sorter: 'default' },
+  { title: '错误信息', key: 'message', sorter: 'default' },
+]
+
+function yieldToMain() {
+  return new Promise<void>(resolve => {
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(() => setTimeout(resolve, 0))
+    } else {
+      setTimeout(resolve, 0)
+    }
+  })
+}
+
+function getOptimizedRange(worksheet: XLSX.WorkSheet): string | null {
+  try {
+    const ref = worksheet['!ref']
+    if (!ref) return null
+    const range = XLSX.utils.decode_range(ref)
+    const totalCells = (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1)
+    if (totalCells < 1000000) return null
+    let minRow = Infinity, maxRow = -1
+    let minCol = Infinity, maxCol = -1
+    const cellAddressRegex = /^([A-Z]+)(\d+)$/
+    for (const key of Object.keys(worksheet)) {
+      if (key.startsWith('!')) continue
+      const match = key.match(cellAddressRegex)
+      if (!match) continue
+      const cell = worksheet[key]
+      if (!cell || cell.v === undefined || cell.v === null || cell.v === '') continue
+      const decoded = XLSX.utils.decode_cell(key)
+      minRow = Math.min(minRow, decoded.r)
+      maxRow = Math.max(maxRow, decoded.r)
+      minCol = Math.min(minCol, decoded.c)
+      maxCol = Math.max(maxCol, decoded.c)
+    }
+    if (maxRow === -1 || maxCol === -1) return null
+    return XLSX.utils.encode_range({
+      s: { r: minRow, c: minCol },
+      e: { r: maxRow, c: maxCol }
+    })
+  } catch {
+    return null
+  }
+}
+
+function handleFileChange({ file }: { file: UploadFileInfo }) {
+  const raw = file?.file
+  if (!raw) {
+    window.$message?.error('未获取到文件内容，请重新选择文件')
+    return
+  }
+  const f = raw instanceof File ? raw : new File([raw], file.name || 'import.xlsx', { type: raw.type || '' })
+  excelFile.value = f
+  parseExcel(f)
+}
+
+function parseExcel(file: File) {
+  isParsing.value = true
+  parsingProgress.value = 0
+  parsingStatus.value = '正在读取文件...'
+  parsingDetail.value = ''
+  excelColumns.value = []
+  excelData.value = []
+
+  const reader = new FileReader()
+
+  reader.onprogress = (e) => {
+    if (e.lengthComputable) {
+      const progress = Math.round((e.loaded / e.total) * 30)
+      parsingProgress.value = progress
+      parsingDetail.value = `已读取 ${(e.loaded / 1024 / 1024).toFixed(2)} MB / ${(e.total / 1024 / 1024).toFixed(2)} MB`
+    }
+  }
+
+  reader.onload = async (e) => {
+    try {
+      parsingProgress.value = 30
+      parsingStatus.value = '正在解析Excel结构...'
+      parsingDetail.value = ''
+      await yieldToMain()
+
+      const arrayBuffer = e.target?.result as ArrayBuffer
+      const data = new Uint8Array(arrayBuffer)
+      parsingProgress.value = 50
+      parsingStatus.value = '正在解析工作表...'
+      await yieldToMain()
+
+      const workbook = XLSX.read(data, { type: 'array' })
+      const firstSheetName = workbook.SheetNames[0]
+      parsingProgress.value = 60
+      parsingDetail.value = `工作表: ${firstSheetName}`
+      await yieldToMain()
+
+      const worksheet = workbook.Sheets[firstSheetName]
+      parsingProgress.value = 70
+      parsingStatus.value = '正在转换数据...'
+      await yieldToMain()
+
+      const optimizedRange = getOptimizedRange(worksheet)
+      if (optimizedRange) {
+        parsingDetail.value = `优化范围: ${optimizedRange}`
+        await yieldToMain()
+      }
+
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+        header: 1,
+        defval: '',
+        range: optimizedRange || undefined
+      })
+      parsingProgress.value = 80
+
+      if (jsonData.length === 0) {
+        isParsing.value = false
+        parsingProgress.value = 0
+        window.$message?.error('Excel文件为空')
+        return
+      }
+
+      parsingStatus.value = '正在处理数据...'
+      parsingDetail.value = `共 ${jsonData.length - 1} 行数据`
+
+      const headers = jsonData[0] as string[]
+      excelColumns.value = headers.filter(h => h && String(h).trim())
+      parsingProgress.value = 85
+      await yieldToMain()
+
+      const rows = jsonData.slice(1) as any[][]
+      const totalRows = rows.length
+      const CHUNK = Math.max(1, Math.floor(totalRows / 20) || 1)
+      const result: any[] = []
+      let embeddedMap = new Map<number, { blob: Blob; col: number; row: number }[]>()
+
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        try {
+          parsingStatus.value = '正在提取表格内嵌入图片...'
+          await yieldToMain()
+          embeddedMap = await extractEmbeddedImagesFromXlsx(arrayBuffer)
+        } catch (ex) {
+          console.warn('提取嵌入图片失败，将仅使用URL列:', ex)
+        }
+      }
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i]
+        const obj: any = { _rowIndex: i + 2 }
+        headers.forEach((header, colIndex) => {
+          if (header && String(header).trim()) {
+            obj[String(header).trim()] = row[colIndex] ?? ''
+          }
+        })
+        result.push(obj)
+        if ((i + 1) % CHUNK === 0 || i === rows.length - 1) {
+          parsingProgress.value = 85 + Math.round(((i + 1) / totalRows) * 10)
+          await yieldToMain()
+        }
+      }
+
+      let hasEmbedded = false
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        const ordered = await getOrderedAnchorsWithBlobs(arrayBuffer)
+        if (ordered.length > 0) {
+          const maxDataRowIndex = Math.max(...ordered.map((o) => o.dataRowIndex))
+          while (result.length <= maxDataRowIndex) {
+            const emptyRow: any = { _rowIndex: result.length + 2 }
+            headers.forEach((header) => {
+              if (header && String(header).trim()) emptyRow[String(header).trim()] = ''
+            })
+            result.push(emptyRow)
+          }
+          const byRow = new Map<number, Array<{ col: number; blob: Blob; source?: 'drawing' | 'dispimg' }>>()
+          for (const { dataRowIndex, col, blob, source } of ordered) {
+            if (dataRowIndex < 0) continue
+            const arr = byRow.get(dataRowIndex) ?? []
+            arr.push({ col, blob, source })
+            byRow.set(dataRowIndex, arr)
+          }
+          for (const [dataRowIndex, arr] of byRow) {
+            const [b1, b2] = pickTwoDistinctBlobsPerRow(arr)
+            if (dataRowIndex < 0 || dataRowIndex >= result.length) continue
+            const rowObj = result[dataRowIndex]
+            if (b1) rowObj['本行嵌入图片1'] = b1
+            if (b2) rowObj['本行嵌入图片2'] = b2
+            hasEmbedded = true
+          }
+        } else {
+          for (let j = 0; j < result.length; j++) {
+            const rowObj = result[j]
+            const imgs = embeddedMap.get(j) ?? []
+            if (imgs.length > 0) {
+              const [b1, b2] = pickTwoDistinctBlobsPerRow(imgs.map((i) => ({ col: i.col, blob: i.blob })))
+              if (b1) rowObj['本行嵌入图片1'] = b1
+              if (b2) rowObj['本行嵌入图片2'] = b2
+              hasEmbedded = true
+            }
+          }
+        }
+      }
+      excelData.value = result
+      if (hasEmbedded) {
+        const baseCols = [...excelColumns.value]
+        if (!baseCols.includes('本行嵌入图片1')) baseCols.push('本行嵌入图片1')
+        if (!baseCols.includes('本行嵌入图片2')) baseCols.push('本行嵌入图片2')
+        excelColumns.value = baseCols
+      }
+      parsingProgress.value = 95
+      parsingStatus.value = '正在初始化字段映射...'
+      await yieldToMain()
+
+      initFieldMapping()
+
+      parsingProgress.value = 100
+      parsingStatus.value = '解析完成！'
+      parsingDetail.value = `成功解析 ${excelData.value.length} 行数据，${excelColumns.value.length} 个列`
+      await yieldToMain()
+
+      await new Promise(r => setTimeout(r, 400))
+      isParsing.value = false
+      parsingProgress.value = 0
+      window.$message?.success(`成功解析Excel，共 ${excelData.value.length} 行数据`)
+
+    } catch (error) {
+      isParsing.value = false
+      parsingProgress.value = 0
+      console.error('解析Excel失败:', error)
+      window.$message?.error('解析Excel文件失败，请检查文件格式')
+    }
+  }
+
+  reader.onerror = () => {
+    isParsing.value = false
+    parsingProgress.value = 0
+    window.$message?.error('文件读取失败')
+  }
+
+  reader.readAsArrayBuffer(file)
+}
+
+function initFieldMapping() {
+  fieldMapping.value = fieldDefinitions.map(def => ({
+    fieldName: def.fieldName,
+    fieldLabel: def.fieldLabel,
+    required: def.required,
+    excelColumn: null,
+    defaultValue: def.defaultValue || '',
+    defaultValuePlaceholder: def.defaultValue ? `默认: ${def.defaultValue}` : '',
+    type: def.type || 'string'
+  }))
+
+  const hasEmbedded1 = excelColumns.value.includes('本行嵌入图片1')
+  const hasEmbedded2 = excelColumns.value.includes('本行嵌入图片2')
+  fieldMapping.value.forEach(mapping => {
+    const fieldName = mapping.fieldName.toLowerCase()
+    let matched: string | undefined
+    if (fieldName === 'image_url_1') {
+      if (hasEmbedded1) matched = '本行嵌入图片1'
+      else matched = excelColumns.value.find(col => {
+        const c = String(col).toLowerCase()
+        return c.includes('图片1') || c.includes('图片') || c.includes('image') || c.includes('photo')
+      })
+    } else if (fieldName === 'image_url_2') {
+      if (hasEmbedded2) matched = '本行嵌入图片2'
+      else matched = excelColumns.value.find(col => {
+        const c = String(col).toLowerCase()
+        return c.includes('图片2') || c.includes('image2') || c.includes('photo2')
+      })
+    } else {
+      matched = excelColumns.value.find(col => {
+        const colLower = String(col).toLowerCase()
+        return colLower.includes(fieldName) || fieldName.includes(colLower) ||
+          (fieldName === 'mes_material_code' && (colLower.includes('mes') || colLower.includes('编码'))) ||
+          (fieldName === 'location_code' && (colLower.includes('货位') || colLower.includes('位置'))) ||
+          (fieldName === 'specification_model' && (colLower.includes('规格') || colLower.includes('型号'))) ||
+          (fieldName === 'drawing_no' && colLower.includes('图号')) ||
+          (fieldName === 'custodian' && colLower.includes('保管')) ||
+          (fieldName === 'source_description' && colLower.includes('来源')) ||
+          (fieldName === 'technical_appraisal' && colLower.includes('鉴定')) ||
+          (fieldName === 'disposal_method' && colLower.includes('处置'))
+      })
+    }
+    if (matched) mapping.excelColumn = matched
+  })
+}
+
+async function handleNext() {
+  if (currentStep.value === 1) {
+    generatePreview()
+    currentStep.value++
+    return
+  }
+  if (currentStep.value === 2) {
+    await startImport()
+    currentStep.value = 3
+    return
+  }
+  if (currentStep.value < 3) {
+    currentStep.value++
+  }
+}
+
+function handlePrev() {
+  if (currentStep.value > 0) {
+    currentStep.value--
+  }
+}
+
+function generatePreview() {
+  revokeEmbedPreviewUrls()
+  const mappedList = excelData.value.map((row) => {
+    const mapped: any = { _rowIndex: row._rowIndex ?? 0 }
+    fieldMapping.value.forEach(mapping => {
+      let value: any = null
+      if (mapping.excelColumn && row[mapping.excelColumn] !== undefined) {
+        value = row[mapping.excelColumn]
+      } else if (mapping.defaultValue) {
+        value = mapping.defaultValue
+      }
+
+      if (value !== null && value !== '') {
+        if (mapping.type === 'number') {
+          value = parseFloat(String(value)) || 0
+        } else if (mapping.type === 'image') {
+          if (value instanceof Blob) {
+            // keep Blob
+          } else {
+            const s = String(value).trim()
+            const isFormula = !s || s.startsWith('=') || /^=DISPIMG\s*\(/i.test(s)
+            if (isFormula && mapping.fieldName === 'image_url_1' && row['本行嵌入图片1'] instanceof Blob) {
+              value = row['本行嵌入图片1']
+            } else if (isFormula && mapping.fieldName === 'image_url_2' && row['本行嵌入图片2'] instanceof Blob) {
+              value = row['本行嵌入图片2']
+            } else if (isFormula) {
+              value = null
+            } else {
+              value = s
+            }
+          }
+        } else {
+          value = String(value).trim()
+        }
+      }
+
+      mapped[mapping.fieldName] = value
+    })
+    return mapped
+  })
+  const filtered = batchMode.value === 'validate'
+    ? mappedList.filter(item =>
+        fieldMapping.value
+          .filter(f => f.required)
+          .every(f => item[f.fieldName])
+      )
+    : mappedList
+  const sorted = filtered.sort((a, b) => (a._rowIndex ?? 0) - (b._rowIndex ?? 0))
+  previewAllRows.value = sorted
+  importRangeStart.value = sorted.length > 0 ? 1 : 0
+  importRangeEnd.value = sorted.length
+}
+
+async function startImport() {
+  isImporting.value = true
+  importProgress.value = 0
+  importStatus.value = '正在处理图片...'
+
+  try {
+    const rowsToImport = effectivePreviewData.value
+
+    const processedData = await processImagesForImport(rowsToImport, (current, total) => {
+      const pct = total ? Math.round((current / total) * 50) : 0
+      importProgress.value = pct
+      importStatus.value = `图片处理进度: ${current}/${total}`
+    })
+    const sorted = [...processedData].sort((a: any, b: any) => (a._rowIndex ?? 0) - (b._rowIndex ?? 0))
+
+    importProgress.value = 50
+    importStatus.value = '正在创建机械修复件...'
+    await yieldToMain()
+
+    let successCount = 0
+    let failedCount = 0
+    let skippedCount = 0
+    const errors: Array<{ row: number; message: string }> = []
+
+    for (let idx = 0; idx < sorted.length; idx++) {
+      const item = sorted[idx]
+      const { _rowIndex, image_upload_ids, ...rest } = item
+      const rowNum = _rowIndex ?? idx + 1
+      const body = { ...rest } as MechanicalSparePartCreate & { _rowIndex?: number }
+      delete (body as any)._rowIndex
+      const ids: string[] = image_upload_ids || []
+
+      const code = materialCodeForUpload(body.mes_material_code, idx)
+      if (!body.mes_material_code || !MATERIAL_CODE_PATTERN.test(String(body.mes_material_code).trim())) {
+        body.mes_material_code = code
+      }
+
+      const numFields = ['mes_stock', 'physical_stock'] as const
+      for (const f of numFields) {
+        const v = (body as any)[f]
+        if (v === '' || v === undefined || v === null) {
+          (body as any)[f] = 0
+        } else if (typeof v === 'string') {
+          const n = parseFloat(v)
+          ;(body as any)[f] = Number.isFinite(n) && n >= 0 ? n : 0
+        }
+      }
+
+      try {
+        await createMechanicalSparePartWithImages(body, ids, { allowOverwrite: batchMode.value === 'full' })
+        successCount++
+      } catch (e: any) {
+        const msg = e?.message || e?.detail || String(e)
+        if (msg.includes('已存在') || msg.includes('重复') || msg.includes('跳过')) {
+          skippedCount++
+          errors.push({ row: rowNum, message: msg })
+        } else {
+          failedCount++
+          errors.push({ row: rowNum, message: msg })
+        }
+      }
+
+      const pct = 50 + Math.round(((idx + 1) / sorted.length) * 50)
+      importProgress.value = pct
+      importStatus.value = `正在创建机械修复件: ${idx + 1}/${sorted.length}`
+      await yieldToMain()
+    }
+
+    importProgress.value = 100
+    importStatus.value = '导入完成'
+
+    const allSuccess = failedCount === 0
+    importResult.value = {
+      success: allSuccess,
+      title: allSuccess ? '导入成功' : '导入完成（部分失败）',
+      subTitle: `成功 ${successCount} 条，失败 ${failedCount} 条，跳过 ${skippedCount} 条`,
+      details: {
+        success: successCount,
+        failed: failedCount,
+        skipped: skippedCount,
+        total: sorted.length,
+        errors: errors.slice(0, 50)
+      }
+    }
+    if (successCount > 0) {
+      emit('success')
+    }
+  } catch (error: any) {
+    console.error('批量导入失败:', error)
+    window.$message?.error(error?.message || '批量导入失败')
+    importResult.value = {
+      success: false,
+      title: '导入失败',
+      subTitle: error?.message || '未知错误',
+      details: null
+    }
+  } finally {
+    isImporting.value = false
+    importProgress.value = 0
+    importStatus.value = ''
+  }
+}
+
+const MATERIAL_CODE_PATTERN = /^[a-zA-Z0-9_-]{3,50}$/
+
+function materialCodeForUpload(mesMaterialCode: any, rowIndex: number): string {
+  const s = mesMaterialCode != null ? String(mesMaterialCode).trim() : ''
+  if (s && MATERIAL_CODE_PATTERN.test(s)) return s
+  return `row_${rowIndex + 1}`
+}
+
+async function processImagesForImport(
+  data: any[],
+  onProgress?: (current: number, total: number) => void
+): Promise<any[]> {
+  const processed: any[] = []
+  const total = data.length
+
+  for (let idx = 0; idx < data.length; idx++) {
+    const item = data[idx]
+    const processedItem = { ...item }
+    const imageUploadIds: string[] = []
+    const code = materialCodeForUpload(item.mes_material_code, idx)
+
+    const uploadOne = async (val: any, slot: 1 | 2): Promise<string | null> => {
+      if (!val) return null
+      if (val instanceof Blob) {
+        try {
+          const res = await uploadTempImageFromBlob(val, `embed_${code}_${slot}.png`, code)
+          return res?.upload_id ?? null
+        } catch (e: any) {
+          console.warn(`本行嵌入图片${slot} 上传失败 (${code}):`, e)
+          return null
+        }
+      }
+      if (typeof val === 'string' && val.trim()) {
+        return downloadAndUploadImage(val.trim(), code)
+      }
+      return null
+    }
+
+    const u1 = await uploadOne(item.image_url_1, 1)
+    if (u1) imageUploadIds.push(u1)
+    const u2 = await uploadOne(item.image_url_2, 2)
+    if (u2) imageUploadIds.push(u2)
+
+    delete processedItem.image_url_1
+    delete processedItem.image_url_2
+    if (imageUploadIds.length > 0) {
+      processedItem.image_upload_ids = imageUploadIds
+    }
+
+    processed.push(processedItem)
+    if (onProgress) onProgress(idx + 1, total)
+  }
+
+  return processed
+}
+
+async function downloadAndUploadImage(imageUrl: string, materialCode: string): Promise<string | null> {
+  if (!imageUrl || !materialCode) return null
+
+  try {
+    const cleanUrl = String(imageUrl).trim()
+    if (!cleanUrl) return null
+
+    let finalUrl = cleanUrl
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      finalUrl = new URL(cleanUrl, window.location.origin).href
+    }
+
+    const uploadResult = await downloadAndUploadImageFromUrl(finalUrl, materialCode)
+    return uploadResult.upload_id
+  } catch (error: any) {
+    console.error(`下载并上传图片失败 (${imageUrl}):`, error)
+    return null
+  }
+}
+
+function handleClose() {
+  currentStep.value = 0
+  batchMode.value = 'validate'
+  excelFile.value = null
+  excelColumns.value = []
+  excelData.value = []
+  fieldMapping.value = []
+  previewAllRows.value = []
+  importRangeStart.value = 1
+  importRangeEnd.value = 0
+  importResult.value = {
+    success: false,
+    title: '',
+    subTitle: '',
+    details: null
+  }
+  isParsing.value = false
+  parsingProgress.value = 0
+  parsingStatus.value = '准备解析...'
+  parsingDetail.value = ''
+  isImporting.value = false
+  importProgress.value = 0
+  importStatus.value = ''
+  revokeEmbedPreviewUrls()
+  if (uploadRef.value) {
+    uploadRef.value.clear()
+  }
+  dialogVisible.value = false
+}
+
+watch(() => props.modelValue, (val) => {
+  if (val) {
+    currentStep.value = 0
+  }
+})
+</script>
+
+<style scoped lang="scss">
+.step-content {
+  min-height: 400px;
+  padding: 20px 0;
+}
+
+.batch-mode-row {
+  margin-bottom: 20px;
+  .mode-label {
+    display: block;
+    font-size: 14px;
+    color: #606266;
+    margin-bottom: 8px;
+  }
+  .batch-mode-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    :deep(.n-radio-button) {
+      flex: 1;
+      min-width: 260px;
+      .n-radio-button__inner {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        text-align: left;
+        padding: 12px 16px;
+        white-space: normal;
+      }
+    }
+  }
+  .mode-title {
+    font-weight: 500;
+    color: #303133;
+  }
+  .mode-desc {
+    font-size: 12px;
+    color: #909399;
+    margin-top: 4px;
+  }
+}
+
+.columns-preview {
+  margin-top: 20px;
+  padding: 16px;
+  background: #f5f7fa;
+  border-radius: 4px;
+
+  h4 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    color: #606266;
+  }
+}
+
+.import-details {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.image-preview-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-text {
+  color: #c0c4cc;
+  font-style: italic;
+}
+
+.mode-hint {
+  font-size: 12px;
+  color: #909399;
+  font-weight: normal;
+}
+
+.parsing-progress {
+  margin-top: 24px;
+  padding: 24px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 16px;
+  font-weight: 500;
+  color: #303133;
+
+  .progress-text {
+    flex: 1;
+  }
+}
+
+.progress-detail {
+  margin-top: 12px;
+  font-size: 14px;
+  color: #606266;
+  text-align: center;
+}
+
+.step-preview-wrap {
+  position: relative;
+}
+
+.import-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.import-progress-box {
+  text-align: center;
+  padding: 24px 32px;
+  min-width: 320px;
+}
+
+.import-status {
+  margin-top: 12px;
+  font-size: 15px;
+  color: #303133;
+  font-weight: 500;
+}
+
+.range-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #606266;
+  .range-label {
+    font-weight: 500;
+  }
+  .range-separator {
+    margin: 0 4px;
+  }
+  .range-hint {
+    font-size: 12px;
+    color: #909399;
+  }
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.table-scroll-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 767px) {
+  .batch-import-dialog :deep(.n-card__content) {
+    padding: 12px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .batch-import-dialog .step-content {
+    min-height: 280px;
+    padding: 12px 0;
+  }
+  .batch-import-dialog .batch-mode-row .batch-mode-group :deep(.n-radio-button) {
+    min-width: 0;
+  }
+  .batch-import-dialog :deep(.n-data-table) {
+    font-size: 12px;
+  }
+  .batch-import-dialog :deep(.n-steps) {
+    flex-wrap: wrap;
+  }
+}
+</style>
